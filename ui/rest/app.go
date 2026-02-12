@@ -2,6 +2,7 @@ package rest
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/config"
 	domainApp "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/app"
@@ -41,7 +42,7 @@ func (handler *App) Login(c *fiber.Ctx) error {
 		Message: "Login success",
 		Results: map[string]any{
 			"device_id":   device.ID(),
-			"qr_link":     fmt.Sprintf("%s://%s%s/%s", c.Protocol(), c.Hostname(), config.AppBasePath, response.ImagePath),
+			"qr_link":     fmt.Sprintf("%s://%s%s/%s", c.Protocol(), c.Hostname(), config.AppBasePath, strings.TrimPrefix(response.ImagePath, "/")),
 			"qr_duration": response.Duration,
 		},
 	})

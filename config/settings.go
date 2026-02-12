@@ -18,12 +18,12 @@ var (
 	McpPort = "8080"
 	McpHost = "localhost"
 
-	PathQrCode    = "statics/qrcode"
-	PathSendItems = "statics/senditems"
-	PathMedia     = "statics/media"
-	PathStorages  = "storages"
+	PathQrCode    = "/tmp"
+	PathSendItems = "/tmp"
+	PathMedia     = "/tmp"
+	PathStorages  = "/tmp"
 
-	DBURI     = "file:storages/whatsapp.db?_foreign_keys=on"
+	DBURI     = "file:/tmp/whatsapp.db?_pragma=foreign_keys(1)"
 	DBKeysURI = ""
 
 	WhatsappAutoReplyMessage          string

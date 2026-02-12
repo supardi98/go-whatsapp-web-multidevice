@@ -329,7 +329,7 @@ export default {
       }
 
       const messageId = message.id;
-      
+
       // Skip if already downloaded or downloading
       if (this.isMediaDownloaded(messageId) || this.isMediaDownloading(messageId)) {
         return;
@@ -343,7 +343,7 @@ export default {
       try {
         this.downloadingMedia.add(messageId);
         this.currentDownloads++;
-        
+
         // Clear any previous error
         if (this.mediaDownloadErrors[messageId]) {
           delete this.mediaDownloadErrors[messageId];

@@ -53,7 +53,7 @@ func restServer(_ *cobra.Command, _ []string) {
 
 	app := fiber.New(fiberConfig)
 
-	app.Static(config.AppBasePath+"/statics", "./statics")
+	app.Static(config.AppBasePath+"/tmp", "/tmp")
 	app.Use(config.AppBasePath+"/components", filesystem.New(filesystem.Config{
 		Root:       http.FS(EmbedViews),
 		PathPrefix: "views/components",
