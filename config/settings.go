@@ -44,7 +44,7 @@ var (
 	WhatsappTypeLid                            = "@lid"
 	WhatsappAccountValidation                  = true
 
-	ChatStorageURI               = "file:storages/chatstorage.db"
+	ChatStorageURI               = "file:/tmp/chatstorage.db"
 	ChatStorageEnableForeignKeys = true
 	ChatStorageEnableWAL         = true
 
