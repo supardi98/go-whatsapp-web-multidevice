@@ -284,7 +284,7 @@ func registerUIRoute(apiGroup fiber.Router, ctx context.Context) {
 		go uiManager.StartAutoUpdate(ctx)
 	}
 
-	apiGroup.Get("/", func(c fiber.Ctx) error {
+	serveUI := func(c fiber.Ctx) error {
 		content, etag, ok := uiManager.Content()
 		if !ok {
 			c.Type("html")
@@ -298,7 +298,24 @@ func registerUIRoute(apiGroup fiber.Router, ctx context.Context) {
 		}
 		c.Type("html")
 		return c.Send(content)
-	})
+	}
+
+	apiGroup.Get("/", serveUI)
+	// SPA client-side routes fallback
+	spaRoutes := []string{
+		"/connect",
+		"/messaging",
+		"/scheduled",
+		"/groups",
+		"/chats",
+		"/account",
+		"/misc",
+		"/settings",
+		"/webhook-routes",
+	}
+	for _, route := range spaRoutes {
+		apiGroup.Get(route, serveUI)
+	}
 }
 
 func newCORSMiddleware() fiber.Handler {

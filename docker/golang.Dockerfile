@@ -1,7 +1,19 @@
 ############################
-# STEP 1 build executable binary
+# STEP 1: Build React 19 UI
 ############################
-FROM golang:1.26-alpine3.23 AS builder
+FROM node:22-alpine AS ui-builder
+WORKDIR /ui
+
+COPY ./ui/package*.json ./
+RUN npm ci
+
+COPY ./ui .
+RUN npm run build
+
+############################
+# STEP 2: Build Go backend binary
+############################
+FROM golang:1.26-alpine3.23 AS go-builder
 RUN apk add --no-cache gcc musl-dev gcompat
 WORKDIR /whatsapp
 
@@ -13,9 +25,9 @@ RUN go mod download
 COPY ./src .
 RUN go build -ldflags="-w -s" -o /app/whatsapp
 
-#############################
-## STEP 2 build a smaller image
-#############################
+############################
+# STEP 3: Final runtime image
+############################
 FROM alpine:3.23
 RUN apk add --no-cache ffmpeg libwebp-tools poppler-utils tzdata su-exec
 
@@ -29,8 +41,12 @@ RUN addgroup -g "${APP_GID}" gowa && \
 ENV TZ=UTC
 WORKDIR /app
 
-# Copy compiled from builder.
-COPY --from=builder /app/whatsapp /app/whatsapp
+# Copy binary from Go builder
+COPY --from=go-builder /app/whatsapp /app/whatsapp
+
+# Copy compiled UI from React builder
+COPY --from=ui-builder /ui/dist /app/ui-dist
+
 COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh && chown -R gowauser:gowa /app
 
