@@ -437,3 +437,28 @@ func (r *deviceChatStorage) SetDeviceWebhookConfig(deviceID string, config *doma
 func (r *deviceChatStorage) GetDeviceWebhookConfig(deviceID string) (*domainChatStorage.DeviceWebhookConfig, error) {
 	return r.base.GetDeviceWebhookConfig(deviceID)
 }
+
+// GetDeviceWebhookRoutes retrieves the configured webhook routes for a device.
+func (r *deviceChatStorage) GetDeviceWebhookRoutes(deviceID string) ([]domainChatStorage.WebhookRoute, error) {
+	return r.base.GetDeviceWebhookRoutes(deviceID)
+}
+
+// SetDeviceWebhookRoutes updates the webhook routes for a device.
+func (r *deviceChatStorage) SetDeviceWebhookRoutes(deviceID string, routes []domainChatStorage.WebhookRoute) error {
+	return r.base.SetDeviceWebhookRoutes(deviceID, routes)
+}
+
+// AddDeviceWebhookRoute adds a new webhook route for a device.
+func (r *deviceChatStorage) AddDeviceWebhookRoute(deviceID string, route domainChatStorage.WebhookRoute) (*domainChatStorage.WebhookRoute, error) {
+	return r.base.AddDeviceWebhookRoute(deviceID, route)
+}
+
+// UpdateDeviceWebhookRoute updates an existing webhook route for a device.
+func (r *deviceChatStorage) UpdateDeviceWebhookRoute(deviceID string, routeID string, route domainChatStorage.WebhookRoute) (*domainChatStorage.WebhookRoute, error) {
+	return r.base.UpdateDeviceWebhookRoute(deviceID, routeID, route)
+}
+
+// DeleteDeviceWebhookRoute removes a webhook route for a device.
+func (r *deviceChatStorage) DeleteDeviceWebhookRoute(deviceID string, routeID string) error {
+	return r.base.DeleteDeviceWebhookRoute(deviceID, routeID)
+}

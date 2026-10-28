@@ -2,6 +2,7 @@ package rest
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/config"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/domains/chatstorage"
@@ -30,6 +31,10 @@ func InitRestDevice(app fiber.Router, service device.IDeviceUsecase) Device {
 	app.Get("/devices/:device_id/status", rest.Status)
 	app.Patch("/devices/:device_id/webhook", rest.UpdateDeviceWebhook)
 	app.Get("/devices/:device_id/webhook", rest.GetDeviceWebhook)
+	app.Get("/devices/:device_id/webhook/routes", rest.ListDeviceWebhookRoutes)
+	app.Post("/devices/:device_id/webhook/routes", rest.AddDeviceWebhookRoute)
+	app.Put("/devices/:device_id/webhook/routes/:route_id", rest.UpdateDeviceWebhookRoute)
+	app.Delete("/devices/:device_id/webhook/routes/:route_id", rest.DeleteDeviceWebhookRoute)
 
 	return rest
 }
@@ -205,10 +210,11 @@ func (handler *Device) Status(c fiber.Ctx) error {
 func (handler *Device) UpdateDeviceWebhook(c fiber.Ctx) error {
 	deviceID := pathDeviceID(c)
 	var req struct {
-		WebhookURL                *string `json:"webhook_url"`
-		WebhookSecret             string  `json:"webhook_secret"`
-		WebhookEvents             string  `json:"webhook_events"`
-		WebhookInsecureSkipVerify bool    `json:"webhook_insecure_skip_verify"`
+		WebhookURL                *string                    `json:"webhook_url"`
+		WebhookSecret             string                     `json:"webhook_secret"`
+		WebhookEvents             string                     `json:"webhook_events"`
+		WebhookInsecureSkipVerify bool                       `json:"webhook_insecure_skip_verify"`
+		WebhookRoutes             []chatstorage.WebhookRoute `json:"webhook_routes"`
 	}
 
 	if err := c.Bind().Body(&req); err != nil {
@@ -220,24 +226,44 @@ func (handler *Device) UpdateDeviceWebhook(c fiber.Ctx) error {
 		})
 	}
 
-	if req.WebhookURL == nil {
+	existingConfig, _ := handler.Service.GetDeviceWebhookConfig(c.Context(), deviceID)
+	webhookURL := req.WebhookURL
+	if webhookURL == nil && existingConfig != nil {
+		webhookURL = existingConfig.WebhookURL
+	}
+
+	if webhookURL == nil && len(req.WebhookRoutes) == 0 {
 		return c.Status(fiber.StatusBadRequest).JSON(utils.ResponseData{
 			Status:  400,
 			Code:    "BAD_REQUEST",
-			Message: "webhook_url is required",
+			Message: "webhook_url or webhook_routes is required",
 			Results: nil,
 		})
 	}
 
+	routes := req.WebhookRoutes
+	if routes == nil && existingConfig != nil {
+		routes = existingConfig.WebhookRoutes
+	}
+	if routes == nil {
+		routes = []chatstorage.WebhookRoute{}
+	}
+
 	config := &chatstorage.DeviceWebhookConfig{
-		WebhookURL:                req.WebhookURL,
+		WebhookURL:                webhookURL,
 		WebhookSecret:             req.WebhookSecret,
 		WebhookEvents:             req.WebhookEvents,
 		WebhookInsecureSkipVerify: req.WebhookInsecureSkipVerify,
+		WebhookRoutes:             routes,
 	}
 
 	err := handler.Service.SetDeviceWebhookConfig(c.Context(), deviceID, config)
 	utils.PanicIfNeeded(err)
+
+	urlResult := ""
+	if webhookURL != nil {
+		urlResult = *webhookURL
+	}
 
 	return c.JSON(utils.ResponseData{
 		Status:  200,
@@ -245,10 +271,11 @@ func (handler *Device) UpdateDeviceWebhook(c fiber.Ctx) error {
 		Message: "Device webhook updated",
 		Results: map[string]any{
 			"device_id":                    deviceID,
-			"webhook_url":                  *req.WebhookURL,
+			"webhook_url":                  urlResult,
 			"webhook_secret":               req.WebhookSecret,
 			"webhook_events":               req.WebhookEvents,
 			"webhook_insecure_skip_verify": req.WebhookInsecureSkipVerify,
+			"webhook_routes":               routes,
 		},
 	})
 }
@@ -262,6 +289,11 @@ func (handler *Device) GetDeviceWebhook(c fiber.Ctx) error {
 	webhookURL := ""
 	if config != nil && config.WebhookURL != nil {
 		webhookURL = *config.WebhookURL
+	}
+
+	routes := []chatstorage.WebhookRoute{}
+	if config != nil && config.WebhookRoutes != nil {
+		routes = config.WebhookRoutes
 	}
 
 	return c.JSON(utils.ResponseData{
@@ -289,6 +321,128 @@ func (handler *Device) GetDeviceWebhook(c fiber.Ctx) error {
 				}
 				return false
 			}(),
+			"webhook_routes": routes,
+		},
+	})
+}
+
+// ListDeviceWebhookRoutes handles GET /devices/:device_id/webhook/routes.
+func (handler *Device) ListDeviceWebhookRoutes(c fiber.Ctx) error {
+	deviceID := pathDeviceID(c)
+	routes, err := handler.Service.GetDeviceWebhookRoutes(c.Context(), deviceID)
+	utils.PanicIfNeeded(err)
+
+	if routes == nil {
+		routes = []chatstorage.WebhookRoute{}
+	}
+
+	return c.JSON(utils.ResponseData{
+		Status:  200,
+		Code:    "SUCCESS",
+		Message: "Device webhook routes retrieved",
+		Results: routes,
+	})
+}
+
+// AddDeviceWebhookRoute handles POST /devices/:device_id/webhook/routes.
+func (handler *Device) AddDeviceWebhookRoute(c fiber.Ctx) error {
+	deviceID := pathDeviceID(c)
+	var route chatstorage.WebhookRoute
+	if err := c.Bind().Body(&route); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(utils.ResponseData{
+			Status:  400,
+			Code:    "BAD_REQUEST",
+			Message: "Invalid request body",
+			Results: nil,
+		})
+	}
+
+	if strings.TrimSpace(route.WebhookURL) == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(utils.ResponseData{
+			Status:  400,
+			Code:    "BAD_REQUEST",
+			Message: "webhook_url is required",
+			Results: nil,
+		})
+	}
+
+	created, err := handler.Service.AddDeviceWebhookRoute(c.Context(), deviceID, route)
+	utils.PanicIfNeeded(err)
+
+	return c.Status(fiber.StatusCreated).JSON(utils.ResponseData{
+		Status:  201,
+		Code:    "SUCCESS",
+		Message: "Device webhook route added",
+		Results: created,
+	})
+}
+
+// UpdateDeviceWebhookRoute handles PUT /devices/:device_id/webhook/routes/:route_id.
+func (handler *Device) UpdateDeviceWebhookRoute(c fiber.Ctx) error {
+	deviceID := pathDeviceID(c)
+	routeID := c.Params("route_id")
+	if strings.TrimSpace(routeID) == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(utils.ResponseData{
+			Status:  400,
+			Code:    "BAD_REQUEST",
+			Message: "route_id is required",
+			Results: nil,
+		})
+	}
+
+	var route chatstorage.WebhookRoute
+	if err := c.Bind().Body(&route); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(utils.ResponseData{
+			Status:  400,
+			Code:    "BAD_REQUEST",
+			Message: "Invalid request body",
+			Results: nil,
+		})
+	}
+
+	if strings.TrimSpace(route.WebhookURL) == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(utils.ResponseData{
+			Status:  400,
+			Code:    "BAD_REQUEST",
+			Message: "webhook_url is required",
+			Results: nil,
+		})
+	}
+
+	updated, err := handler.Service.UpdateDeviceWebhookRoute(c.Context(), deviceID, routeID, route)
+	utils.PanicIfNeeded(err)
+
+	return c.JSON(utils.ResponseData{
+		Status:  200,
+		Code:    "SUCCESS",
+		Message: "Device webhook route updated",
+		Results: updated,
+	})
+}
+
+// DeleteDeviceWebhookRoute handles DELETE /devices/:device_id/webhook/routes/:route_id.
+func (handler *Device) DeleteDeviceWebhookRoute(c fiber.Ctx) error {
+	deviceID := pathDeviceID(c)
+	routeID := c.Params("route_id")
+	if strings.TrimSpace(routeID) == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(utils.ResponseData{
+			Status:  400,
+			Code:    "BAD_REQUEST",
+			Message: "route_id is required",
+			Results: nil,
+		})
+	}
+
+	err := handler.Service.DeleteDeviceWebhookRoute(c.Context(), deviceID, routeID)
+	utils.PanicIfNeeded(err)
+
+	return c.JSON(utils.ResponseData{
+		Status:  200,
+		Code:    "SUCCESS",
+		Message: "Device webhook route deleted",
+		Results: map[string]any{
+			"device_id": deviceID,
+			"route_id":  routeID,
 		},
 	})
 }

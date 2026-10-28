@@ -335,6 +335,128 @@ func (s *serviceDevice) GetDeviceWebhookConfig(ctx context.Context, deviceID str
 	return config, nil
 }
 
+// GetDeviceWebhookRoutes retrieves the webhook routes for a specific device.
+func (s *serviceDevice) GetDeviceWebhookRoutes(ctx context.Context, deviceID string) ([]chatstorage.WebhookRoute, error) {
+	if s.manager == nil {
+		return nil, fmt.Errorf("device manager not initialized")
+	}
+
+	_, ok := s.manager.GetDevice(deviceID)
+	if !ok {
+		return nil, pkgError.ErrDeviceNotFound
+	}
+
+	storage := s.manager.GetStorage()
+	if storage == nil {
+		return nil, fmt.Errorf("storage not available")
+	}
+
+	routes, err := storage.GetDeviceWebhookRoutes(deviceID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get device webhook routes: %w", err)
+	}
+
+	return routes, nil
+}
+
+// AddDeviceWebhookRoute adds a new webhook route for a specific device.
+func (s *serviceDevice) AddDeviceWebhookRoute(ctx context.Context, deviceID string, route chatstorage.WebhookRoute) (*chatstorage.WebhookRoute, error) {
+	if s.manager == nil {
+		return nil, fmt.Errorf("device manager not initialized")
+	}
+
+	_, ok := s.manager.GetDevice(deviceID)
+	if !ok {
+		return nil, pkgError.ErrDeviceNotFound
+	}
+
+	storage := s.manager.GetStorage()
+	if storage == nil {
+		return nil, fmt.Errorf("storage not available")
+	}
+
+	created, err := storage.AddDeviceWebhookRoute(deviceID, route)
+	if err != nil {
+		return nil, fmt.Errorf("failed to add device webhook route: %w", err)
+	}
+
+	websocket.Broadcast <- websocket.BroadcastMessage{
+		Code:    "DEVICE_WEBHOOK_ROUTE_ADDED",
+		Message: fmt.Sprintf("Device %s webhook route added", deviceID),
+		Result: map[string]any{
+			"device_id": deviceID,
+			"route_id":  created.ID,
+		},
+	}
+
+	return created, nil
+}
+
+// UpdateDeviceWebhookRoute updates an existing webhook route for a specific device.
+func (s *serviceDevice) UpdateDeviceWebhookRoute(ctx context.Context, deviceID string, routeID string, route chatstorage.WebhookRoute) (*chatstorage.WebhookRoute, error) {
+	if s.manager == nil {
+		return nil, fmt.Errorf("device manager not initialized")
+	}
+
+	_, ok := s.manager.GetDevice(deviceID)
+	if !ok {
+		return nil, pkgError.ErrDeviceNotFound
+	}
+
+	storage := s.manager.GetStorage()
+	if storage == nil {
+		return nil, fmt.Errorf("storage not available")
+	}
+
+	updated, err := storage.UpdateDeviceWebhookRoute(deviceID, routeID, route)
+	if err != nil {
+		return nil, fmt.Errorf("failed to update device webhook route: %w", err)
+	}
+
+	websocket.Broadcast <- websocket.BroadcastMessage{
+		Code:    "DEVICE_WEBHOOK_ROUTE_UPDATED",
+		Message: fmt.Sprintf("Device %s webhook route updated", deviceID),
+		Result: map[string]any{
+			"device_id": deviceID,
+			"route_id":  routeID,
+		},
+	}
+
+	return updated, nil
+}
+
+// DeleteDeviceWebhookRoute removes a webhook route for a specific device.
+func (s *serviceDevice) DeleteDeviceWebhookRoute(ctx context.Context, deviceID string, routeID string) error {
+	if s.manager == nil {
+		return fmt.Errorf("device manager not initialized")
+	}
+
+	_, ok := s.manager.GetDevice(deviceID)
+	if !ok {
+		return pkgError.ErrDeviceNotFound
+	}
+
+	storage := s.manager.GetStorage()
+	if storage == nil {
+		return fmt.Errorf("storage not available")
+	}
+
+	if err := storage.DeleteDeviceWebhookRoute(deviceID, routeID); err != nil {
+		return fmt.Errorf("failed to delete device webhook route: %w", err)
+	}
+
+	websocket.Broadcast <- websocket.BroadcastMessage{
+		Code:    "DEVICE_WEBHOOK_ROUTE_DELETED",
+		Message: fmt.Sprintf("Device %s webhook route deleted", deviceID),
+		Result: map[string]any{
+			"device_id": deviceID,
+			"route_id":  routeID,
+		},
+	}
+
+	return nil
+}
+
 func convertInstance(inst *whatsapp.DeviceInstance) domainDevice.Device {
 	if inst == nil {
 		return domainDevice.Device{}

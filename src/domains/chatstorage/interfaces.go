@@ -147,6 +147,12 @@ type IChatStorageRepository interface {
 	SetDeviceWebhookConfig(deviceID string, config *DeviceWebhookConfig) error
 	// GetDeviceWebhookConfig retrieves the full webhook configuration for a device.
 	GetDeviceWebhookConfig(deviceID string) (*DeviceWebhookConfig, error)
+	// Webhook route operations
+	GetDeviceWebhookRoutes(deviceID string) ([]WebhookRoute, error)
+	SetDeviceWebhookRoutes(deviceID string, routes []WebhookRoute) error
+	AddDeviceWebhookRoute(deviceID string, route WebhookRoute) (*WebhookRoute, error)
+	UpdateDeviceWebhookRoute(deviceID string, routeID string, route WebhookRoute) (*WebhookRoute, error)
+	DeleteDeviceWebhookRoute(deviceID string, routeID string) error
 
 	// Schema operations
 	InitializeSchema() error

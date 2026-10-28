@@ -28,4 +28,9 @@ type IDeviceUsecase interface {
 	SetDeviceWebhookConfig(ctx context.Context, deviceID string, config *chatstorage.DeviceWebhookConfig) error
 	// GetDeviceWebhookConfig retrieves the complete webhook configuration for a specific device.
 	GetDeviceWebhookConfig(ctx context.Context, deviceID string) (*chatstorage.DeviceWebhookConfig, error)
+	// Webhook route operations
+	GetDeviceWebhookRoutes(ctx context.Context, deviceID string) ([]chatstorage.WebhookRoute, error)
+	AddDeviceWebhookRoute(ctx context.Context, deviceID string, route chatstorage.WebhookRoute) (*chatstorage.WebhookRoute, error)
+	UpdateDeviceWebhookRoute(ctx context.Context, deviceID string, routeID string, route chatstorage.WebhookRoute) (*chatstorage.WebhookRoute, error)
+	DeleteDeviceWebhookRoute(ctx context.Context, deviceID string, routeID string) error
 }

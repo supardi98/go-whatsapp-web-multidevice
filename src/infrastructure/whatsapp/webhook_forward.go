@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -174,6 +175,31 @@ func forwardPayloadToConfiguredWebhooks(ctx context.Context, payload map[string]
 	webhookAllowed := jidAllowed && isEventWhitelistedForDevice(eventName, webhookConfig)
 	chatwootAllowed := config.ChatwootEnabled && shouldForwardEventToChatwoot(eventName) && isEventWhitelistedForChatwoot(eventName)
 
+	// Evaluate custom webhook routes for this device
+	var matchedRoutes []domainChatStorage.WebhookRoute
+	skipDefaultDeviceWebhook := false
+	if jidAllowed && webhookConfig != nil && len(webhookConfig.WebhookRoutes) > 0 {
+		for _, route := range webhookConfig.WebhookRoutes {
+			if !route.Enabled {
+				continue
+			}
+			if !isEventWhitelistedForRoute(eventName, route.WebhookEvents) {
+				continue
+			}
+			if matchesRouteJID(payload, route.MatchJID) {
+				matchedRoutes = append(matchedRoutes, route)
+				if route.Exclusive {
+					skipDefaultDeviceWebhook = true
+				}
+			}
+		}
+	}
+
+	if skipDefaultDeviceWebhook {
+		webhookAllowed = false
+	}
+	routesAllowed := len(matchedRoutes) > 0
+
 	webhookURLs := getWebhookURLsFromConfig(webhookConfig)
 	if len(webhookURLs) == 0 {
 		webhookURLs = config.WhatsappWebhook
@@ -186,10 +212,6 @@ func forwardPayloadToConfiguredWebhooks(ctx context.Context, payload map[string]
 	var globalURLs []string
 	if config.WhatsappWebhookDeviceMergeGlobal && webhookConfig != nil && jidAllowed &&
 		isEventWhitelistedForDevice(eventName, nil) {
-		// Only dedup against the device URLs when the device leg is actually going to
-		// deliver. A global URL that happens to equal the device URL is still a global
-		// subscription: if the device's own event filter rejects this event, excluding
-		// it here would drop the event entirely for a target the global config accepts.
 		deviceURLs := webhookURLs
 		if !webhookAllowed {
 			deviceURLs = nil
@@ -198,25 +220,15 @@ func forwardPayloadToConfiguredWebhooks(ctx context.Context, payload map[string]
 	}
 	globalAllowed := len(globalURLs) > 0
 
-	if !webhookAllowed && !globalAllowed && !chatwootAllowed {
+	if !webhookAllowed && !globalAllowed && !chatwootAllowed && !routesAllowed {
 		logrus.Debugf("Skipping event %s - not allowed for webhooks or Chatwoot", eventName)
 		return nil
 	}
 
-	// Enrich the payload with the operator-facing session id so multi-tenant
-	// consumers can correlate a webhook (whose device_id is the WhatsApp JID)
-	// back to the session id they registered via POST /devices. Done here,
-	// synchronously, before the Chatwoot goroutine is spawned below, so the
-	// shared payload map is never mutated concurrently.
-	if webhookAllowed || globalAllowed {
+	if webhookAllowed || globalAllowed || routesAllowed {
 		addWebhookSessionID(payload)
 	}
 
-	// Run the two legs concurrently. They share the caller's deadline, and each URL
-	// can spend up to ~15s in retry backoff, so running the device leg first would
-	// let one slow endpoint consume the whole budget and leave the global leg a dead
-	// context — precisely the silent drop this flag exists to prevent. Both legs only
-	// read the payload from here on, so sharing it is safe.
 	var (
 		globalErr  error
 		globalDone chan struct{}
@@ -229,6 +241,18 @@ func forwardPayloadToConfiguredWebhooks(ctx context.Context, payload map[string]
 		}()
 	}
 
+	var (
+		routesErr  error
+		routesDone chan struct{}
+	)
+	if routesAllowed {
+		routesDone = make(chan struct{})
+		go func() {
+			defer close(routesDone)
+			routesErr = forwardToRouteWebhooks(ctx, payload, eventName, matchedRoutes, webhookConfig)
+		}()
+	}
+
 	var webhookErr error
 	if webhookAllowed {
 		webhookErr = forwardToWebhooks(ctx, payload, eventName, webhookURLs, webhookConfig)
@@ -238,23 +262,181 @@ func forwardPayloadToConfiguredWebhooks(ctx context.Context, payload map[string]
 
 	if globalAllowed {
 		<-globalDone
-		// Same contract as forwardToWebhooks: only report failure when every
-		// target that was attempted failed.
-		switch {
-		case !webhookAllowed:
-			webhookErr = globalErr
-		case webhookErr != nil && globalErr != nil:
-			webhookErr = fmt.Errorf("%w; global: %v", webhookErr, globalErr)
-		default:
-			webhookErr = nil
-		}
+	}
+	if routesAllowed {
+		<-routesDone
 	}
 
 	if chatwootAllowed {
 		go forwardToChatwoot(ctx, payload, eventName)
 	}
 
-	return webhookErr
+	attemptedCount := 0
+	failedCount := 0
+
+	if webhookAllowed {
+		attemptedCount++
+		if webhookErr != nil {
+			failedCount++
+		}
+	}
+	if globalAllowed {
+		attemptedCount++
+		if globalErr != nil {
+			failedCount++
+		}
+	}
+	if routesAllowed {
+		attemptedCount++
+		if routesErr != nil {
+			failedCount++
+		}
+	}
+
+	if attemptedCount > 0 && attemptedCount == failedCount {
+		var errs []string
+		if webhookErr != nil {
+			errs = append(errs, fmt.Sprintf("device: %v", webhookErr))
+		}
+		if globalErr != nil {
+			errs = append(errs, fmt.Sprintf("global: %v", globalErr))
+		}
+		if routesErr != nil {
+			errs = append(errs, fmt.Sprintf("routes: %v", routesErr))
+		}
+		return fmt.Errorf("all attempted webhooks failed: %s", strings.Join(errs, "; "))
+	}
+
+	return nil
+}
+
+// matchesRouteJID checks if the event payload matches the route's JID pattern.
+func matchesRouteJID(payload map[string]any, pattern string) bool {
+	pattern = strings.TrimSpace(pattern)
+	if pattern == "" || pattern == "*" {
+		return true
+	}
+
+	candidates := make([]string, 0, 6)
+	if from, ok := payload["from"].(string); ok && from != "" {
+		candidates = append(candidates, from)
+	}
+
+	if data, ok := payload["payload"].(map[string]any); ok {
+		for _, key := range []string{"chat_id", "from", "sender", "chat_lid", "from_lid"} {
+			if jid, ok := data[key].(string); ok && jid != "" {
+				candidates = append(candidates, jid)
+			}
+		}
+	}
+
+	for _, jid := range candidates {
+		if matchSingleJID(jid, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchSingleJID(jid, pattern string) bool {
+	if pattern == "*" || pattern == "" {
+		return true
+	}
+	if strings.HasPrefix(pattern, "@") {
+		return strings.HasSuffix(jid, pattern)
+	}
+	if jid == pattern {
+		return true
+	}
+	if !strings.Contains(pattern, "@") {
+		if strings.HasPrefix(jid, pattern+"@") {
+			return true
+		}
+		if utils.ExtractPhoneFromJID(jid) == pattern {
+			return true
+		}
+	}
+	return false
+}
+
+func buildRouteURL(rawURL string, customParams map[string]string) string {
+	if len(customParams) == 0 {
+		return rawURL
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	query := parsed.Query()
+	for k, v := range customParams {
+		query.Set(k, v)
+	}
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
+}
+
+func isEventWhitelistedForRoute(eventName string, allowedEvents string) bool {
+	if strings.TrimSpace(allowedEvents) == "" {
+		return true
+	}
+	for _, allowed := range strings.Split(allowedEvents, ",") {
+		if strings.EqualFold(strings.TrimSpace(allowed), eventName) {
+			return true
+		}
+	}
+	return false
+}
+
+func forwardToRouteWebhooks(ctx context.Context, payload map[string]any, eventName string, routes []domainChatStorage.WebhookRoute, parentConfig *domainChatStorage.DeviceWebhookConfig) error {
+	total := len(routes)
+	logrus.Infof("Forwarding %s to %d matched route webhook(s)", eventName, total)
+	if total == 0 {
+		return nil
+	}
+
+	var (
+		failed    []string
+		successes int
+	)
+
+	for _, route := range routes {
+		targetURL := buildRouteURL(route.WebhookURL, route.CustomParams)
+		routeSecret := route.WebhookSecret
+		if routeSecret == "" && parentConfig != nil {
+			routeSecret = parentConfig.WebhookSecret
+		}
+
+		insecureSkip := route.WebhookInsecureSkipVerify
+		if parentConfig != nil && parentConfig.WebhookInsecureSkipVerify {
+			insecureSkip = true
+		}
+
+		routeConfig := &domainChatStorage.DeviceWebhookConfig{
+			WebhookURL:                &targetURL,
+			WebhookSecret:             routeSecret,
+			WebhookEvents:             route.WebhookEvents,
+			WebhookInsecureSkipVerify: insecureSkip,
+			CustomHeaders:             route.CustomHeaders,
+		}
+
+		if err := submitWebhookFn(ctx, payload, targetURL, routeConfig); err != nil {
+			failed = append(failed, fmt.Sprintf("%s: %v", targetURL, err))
+			logrus.Warnf("Failed forwarding %s to route %s (%s): %v", eventName, route.ID, targetURL, err)
+			continue
+		}
+		successes++
+	}
+
+	if len(failed) > 0 {
+		logrus.Warnf("Some route webhook URLs failed for %s (succeeded: %d/%d): %s", eventName, successes, total, strings.Join(failed, "; "))
+		if successes == 0 {
+			return fmt.Errorf("all %d route webhook(s) failed for %s", total, eventName)
+		}
+	} else {
+		logrus.Infof("%s forwarded to all route webhook(s)", eventName)
+	}
+
+	return nil
 }
 
 // webhookStorageForTest is injectable for unit testing without a real DeviceManager.
@@ -284,14 +466,22 @@ func getWebhookConfigForDevice(deviceJID string) (*domainChatStorage.DeviceWebho
 	if err != nil {
 		return nil, fmt.Errorf("failed to get device record: %w", err)
 	}
-	if record != nil && record.WebhookURL != nil && *record.WebhookURL != "" {
-		logrus.Debugf("Using device-specific webhook config for %s", deviceJID)
-		return &domainChatStorage.DeviceWebhookConfig{
-			WebhookURL:                record.WebhookURL,
-			WebhookSecret:             record.WebhookSecret,
-			WebhookEvents:             record.WebhookEvents,
-			WebhookInsecureSkipVerify: record.WebhookInsecureSkipVerify,
-		}, nil
+	if record != nil {
+		var routes []domainChatStorage.WebhookRoute
+		if record.WebhookRoutes != "" {
+			_ = json.Unmarshal([]byte(record.WebhookRoutes), &routes)
+		}
+		hasURL := record.WebhookURL != nil && *record.WebhookURL != ""
+		if hasURL || len(routes) > 0 {
+			logrus.Debugf("Using device-specific webhook config for %s", deviceJID)
+			return &domainChatStorage.DeviceWebhookConfig{
+				WebhookURL:                record.WebhookURL,
+				WebhookSecret:             record.WebhookSecret,
+				WebhookEvents:             record.WebhookEvents,
+				WebhookInsecureSkipVerify: record.WebhookInsecureSkipVerify,
+				WebhookRoutes:             routes,
+			}, nil
+		}
 	}
 
 	return nil, nil

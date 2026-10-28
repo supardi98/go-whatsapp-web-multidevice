@@ -64,6 +64,12 @@ func submitWebhook(ctx context.Context, payload map[string]any, url string, webh
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Hub-Signature-256", fmt.Sprintf("sha256=%s", signature))
 
+	if webhookConfig != nil && len(webhookConfig.CustomHeaders) > 0 {
+		for k, v := range webhookConfig.CustomHeaders {
+			req.Header.Set(k, v)
+		}
+	}
+
 	var attempt int
 	var maxAttempts = 5
 	var sleepDuration = 1 * time.Second

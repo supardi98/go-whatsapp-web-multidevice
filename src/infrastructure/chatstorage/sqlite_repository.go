@@ -12,6 +12,7 @@ import (
 	domainChatStorage "github.com/aldinokemal/go-whatsapp-web-multidevice/domains/chatstorage"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/infrastructure/whatsapp"
 	"github.com/aldinokemal/go-whatsapp-web-multidevice/pkg/utils"
+	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
@@ -1941,7 +1942,7 @@ func (r *SQLiteRepository) GetDeviceRecordByJID(jid string) (*domainChatStorage.
 	}
 
 	rows, err := r.db.Query(`
-		SELECT device_id, display_name, jid, COALESCE(ad_jid, ''), webhook_url, COALESCE(webhook_secret, ''), COALESCE(webhook_events, ''), COALESCE(webhook_insecure_skip_verify, FALSE), created_at, updated_at
+		SELECT device_id, display_name, jid, COALESCE(ad_jid, ''), webhook_url, COALESCE(webhook_secret, ''), COALESCE(webhook_events, ''), COALESCE(webhook_insecure_skip_verify, FALSE), COALESCE(webhook_routes, '[]'), created_at, updated_at
 		FROM devices
 		WHERE jid = ? OR ad_jid = ?
 		LIMIT 2
@@ -1963,6 +1964,7 @@ func (r *SQLiteRepository) GetDeviceRecordByJID(jid string) (*domainChatStorage.
 			&rec.WebhookSecret,
 			&rec.WebhookEvents,
 			&rec.WebhookInsecureSkipVerify,
+			&rec.WebhookRoutes,
 			&rec.CreatedAt,
 			&rec.UpdatedAt,
 		); err != nil {
@@ -2056,11 +2058,18 @@ func (r *SQLiteRepository) SetDeviceWebhookConfig(deviceID string, config *domai
 		webhookURL = config.WebhookURL
 	}
 
+	routesJSON := "[]"
+	if config.WebhookRoutes != nil {
+		if b, err := json.Marshal(config.WebhookRoutes); err == nil {
+			routesJSON = string(b)
+		}
+	}
+
 	result, err := r.db.Exec(`
 		UPDATE devices
-		SET webhook_url = ?, webhook_secret = ?, webhook_events = ?, webhook_insecure_skip_verify = ?, updated_at = ?
+		SET webhook_url = ?, webhook_secret = ?, webhook_events = ?, webhook_insecure_skip_verify = ?, webhook_routes = ?, updated_at = ?
 		WHERE device_id = ?
-	`, webhookURL, config.WebhookSecret, config.WebhookEvents, config.WebhookInsecureSkipVerify, time.Now(), deviceID)
+	`, webhookURL, config.WebhookSecret, config.WebhookEvents, config.WebhookInsecureSkipVerify, routesJSON, time.Now(), deviceID)
 	if err != nil {
 		return err
 	}
@@ -2082,10 +2091,11 @@ func (r *SQLiteRepository) GetDeviceWebhookConfig(deviceID string) (*domainChatS
 	}
 	var config domainChatStorage.DeviceWebhookConfig
 	var webhookURL *string
+	var routesJSON string
 	err := r.db.QueryRow(`
-		SELECT webhook_url, COALESCE(webhook_secret, ''), COALESCE(webhook_events, ''), COALESCE(webhook_insecure_skip_verify, FALSE)
+		SELECT webhook_url, COALESCE(webhook_secret, ''), COALESCE(webhook_events, ''), COALESCE(webhook_insecure_skip_verify, FALSE), COALESCE(webhook_routes, '[]')
 		FROM devices WHERE device_id = ? LIMIT 1
-	`, deviceID).Scan(&webhookURL, &config.WebhookSecret, &config.WebhookEvents, &config.WebhookInsecureSkipVerify)
+	`, deviceID).Scan(&webhookURL, &config.WebhookSecret, &config.WebhookEvents, &config.WebhookInsecureSkipVerify, &routesJSON)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -2093,7 +2103,129 @@ func (r *SQLiteRepository) GetDeviceWebhookConfig(deviceID string) (*domainChatS
 		return nil, err
 	}
 	config.WebhookURL = webhookURL
+	if routesJSON != "" {
+		_ = json.Unmarshal([]byte(routesJSON), &config.WebhookRoutes)
+	}
 	return &config, nil
+}
+
+// GetDeviceWebhookRoutes retrieves the configured webhook routes for a device.
+func (r *SQLiteRepository) GetDeviceWebhookRoutes(deviceID string) ([]domainChatStorage.WebhookRoute, error) {
+	config, err := r.GetDeviceWebhookConfig(deviceID)
+	if err != nil {
+		return nil, err
+	}
+	if config == nil {
+		return nil, sql.ErrNoRows
+	}
+	if config.WebhookRoutes == nil {
+		return []domainChatStorage.WebhookRoute{}, nil
+	}
+	return config.WebhookRoutes, nil
+}
+
+// SetDeviceWebhookRoutes updates the webhook routes for a device while keeping other settings intact.
+func (r *SQLiteRepository) SetDeviceWebhookRoutes(deviceID string, routes []domainChatStorage.WebhookRoute) error {
+	config, err := r.GetDeviceWebhookConfig(deviceID)
+	if err != nil {
+		return err
+	}
+	if config == nil {
+		return sql.ErrNoRows
+	}
+	config.WebhookRoutes = routes
+	return r.SetDeviceWebhookConfig(deviceID, config)
+}
+
+// AddDeviceWebhookRoute appends a new webhook route to a device's webhook configuration.
+func (r *SQLiteRepository) AddDeviceWebhookRoute(deviceID string, route domainChatStorage.WebhookRoute) (*domainChatStorage.WebhookRoute, error) {
+	if strings.TrimSpace(route.WebhookURL) == "" {
+		return nil, fmt.Errorf("webhook_url is required")
+	}
+	if strings.TrimSpace(route.ID) == "" {
+		route.ID = uuid.New().String()
+	}
+
+	config, err := r.GetDeviceWebhookConfig(deviceID)
+	if err != nil {
+		return nil, err
+	}
+	if config == nil {
+		return nil, sql.ErrNoRows
+	}
+
+	config.WebhookRoutes = append(config.WebhookRoutes, route)
+	if err := r.SetDeviceWebhookConfig(deviceID, config); err != nil {
+		return nil, err
+	}
+	return &route, nil
+}
+
+// UpdateDeviceWebhookRoute updates an existing route by its ID.
+func (r *SQLiteRepository) UpdateDeviceWebhookRoute(deviceID string, routeID string, route domainChatStorage.WebhookRoute) (*domainChatStorage.WebhookRoute, error) {
+	if strings.TrimSpace(routeID) == "" {
+		return nil, fmt.Errorf("route id is required")
+	}
+	if strings.TrimSpace(route.WebhookURL) == "" {
+		return nil, fmt.Errorf("webhook_url is required")
+	}
+	route.ID = routeID
+
+	config, err := r.GetDeviceWebhookConfig(deviceID)
+	if err != nil {
+		return nil, err
+	}
+	if config == nil {
+		return nil, sql.ErrNoRows
+	}
+
+	found := false
+	for i, existing := range config.WebhookRoutes {
+		if existing.ID == routeID {
+			config.WebhookRoutes[i] = route
+			found = true
+			break
+		}
+	}
+	if !found {
+		return nil, fmt.Errorf("route %s not found: %w", routeID, sql.ErrNoRows)
+	}
+
+	if err := r.SetDeviceWebhookConfig(deviceID, config); err != nil {
+		return nil, err
+	}
+	return &route, nil
+}
+
+// DeleteDeviceWebhookRoute deletes a route by its ID.
+func (r *SQLiteRepository) DeleteDeviceWebhookRoute(deviceID string, routeID string) error {
+	if strings.TrimSpace(routeID) == "" {
+		return fmt.Errorf("route id is required")
+	}
+
+	config, err := r.GetDeviceWebhookConfig(deviceID)
+	if err != nil {
+		return err
+	}
+	if config == nil {
+		return sql.ErrNoRows
+	}
+
+	found := false
+	newRoutes := make([]domainChatStorage.WebhookRoute, 0, len(config.WebhookRoutes))
+	for _, existing := range config.WebhookRoutes {
+		if existing.ID == routeID {
+			found = true
+			continue
+		}
+		newRoutes = append(newRoutes, existing)
+	}
+	if !found {
+		return fmt.Errorf("route %s not found: %w", routeID, sql.ErrNoRows)
+	}
+
+	config.WebhookRoutes = newRoutes
+	return r.SetDeviceWebhookConfig(deviceID, config)
 }
 
 // GetChatNameWithPushName determines the appropriate name for a chat with pushname support
@@ -3170,5 +3302,8 @@ func (r *SQLiteRepository) getMigrations() []string {
 
 		// Migration 50: Per-device secret for Chatwoot's signed webhooks (each API channel has its own)
 		`ALTER TABLE chatwoot_device_configs ADD COLUMN webhook_secret TEXT NOT NULL DEFAULT ''`,
+
+		// Migration 51: Per-device webhook routes (JSON array of WebhookRoute)
+		`ALTER TABLE devices ADD COLUMN webhook_routes TEXT DEFAULT '[]'`,
 	}
 }

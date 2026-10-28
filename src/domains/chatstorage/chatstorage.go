@@ -147,6 +147,21 @@ type MediaInfo struct {
 	FileLength    uint64
 }
 
+// WebhookRoute represents a per-JID / per-group webhook routing rule with custom parameters.
+type WebhookRoute struct {
+	ID                        string            `json:"id"`
+	Name                      string            `json:"name,omitempty"`
+	MatchJID                  string            `json:"match_jid"` // Exact JID, wildcard ("@g.us", "@s.whatsapp.net"), or "*"
+	WebhookURL                string            `json:"webhook_url"`
+	WebhookSecret             string            `json:"webhook_secret,omitempty"`
+	WebhookEvents             string            `json:"webhook_events,omitempty"`
+	WebhookInsecureSkipVerify bool              `json:"webhook_insecure_skip_verify,omitempty"`
+	CustomHeaders             map[string]string `json:"custom_headers,omitempty"`
+	CustomParams              map[string]string `json:"custom_params,omitempty"`
+	Exclusive                 bool              `json:"exclusive,omitempty"`
+	Enabled                   bool              `json:"enabled"`
+}
+
 // DeviceRecord tracks a registered device for persistence purposes.
 // JID holds the bare-number (NonAD) form used for chat storage partitioning; ADJID
 // holds the full companion identity (number:NN@s.whatsapp.net) that pins the slot to
@@ -161,16 +176,19 @@ type DeviceRecord struct {
 	WebhookSecret             string    `db:"webhook_secret"`
 	WebhookEvents             string    `db:"webhook_events"`
 	WebhookInsecureSkipVerify bool      `db:"webhook_insecure_skip_verify"`
+	WebhookRoutes             string    `db:"webhook_routes"`
 	CreatedAt                 time.Time `db:"created_at"`
 	UpdatedAt                 time.Time `db:"updated_at"`
 }
 
 // DeviceWebhookConfig holds the complete webhook configuration for a device.
 type DeviceWebhookConfig struct {
-	WebhookURL                *string `json:"webhook_url,omitempty"`
-	WebhookSecret             string  `json:"webhook_secret,omitempty"`
-	WebhookEvents             string  `json:"webhook_events,omitempty"`
-	WebhookInsecureSkipVerify bool    `json:"webhook_insecure_skip_verify,omitempty"`
+	WebhookURL                *string           `json:"webhook_url,omitempty"`
+	WebhookSecret             string            `json:"webhook_secret,omitempty"`
+	WebhookEvents             string            `json:"webhook_events,omitempty"`
+	WebhookInsecureSkipVerify bool              `json:"webhook_insecure_skip_verify,omitempty"`
+	WebhookRoutes             []WebhookRoute    `json:"webhook_routes,omitempty"`
+	CustomHeaders             map[string]string `json:"custom_headers,omitempty"`
 }
 
 // MessageFilter represents query filters for messages
