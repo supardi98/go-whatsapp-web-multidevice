@@ -1,18 +1,58 @@
-import os
+import re
 
-script_code = """
-<!-- CUSTOM WEBHOOK ROUTING UI EXTENSION -->
+html_path = 'storages/ui/index.html'
+
+with open(html_path, 'r', encoding='utf-8') as f:
+    content = f.read()
+
+# 1. Expose window.gowaApi if not already exposed
+if 'window.gowaApi=Y=' not in content:
+    content = content.replace('Y=NE.create({timeout:45e3})', 'window.gowaApi=Y=NE.create({timeout:45e3})', 1)
+    print("Exposed window.gowaApi")
+
+# 2. Add Webhook Routes to sidebar EO if not already present
+sidebar_target = "{to:`/misc`,label:`Channels & Calls`,icon:Vo},{to:`/settings`,label:`Settings`,icon:xo}"
+sidebar_replacement = "{to:`/misc`,label:`Channels & Calls`,icon:Vo},{to:`/webhook-routes`,label:`Webhook Routes`,icon:Bo},{to:`/settings`,label:`Settings`,icon:xo}"
+if sidebar_target in content:
+    content = content.replace(sidebar_target, sidebar_replacement, 1)
+    print("Added Webhook Routes to sidebar navigation array")
+elif sidebar_replacement in content:
+    print("Sidebar navigation already contains Webhook Routes")
+else:
+    print("WARNING: Sidebar target not found")
+
+# 3. Add WebhookRoutesPage component definition
+page_comp_def = "function WebhookRoutesPage(){let e=WO();(0,L.useEffect)(()=>{window.mountWebhookRoutesPage&&window.mountWebhookRoutesPage(e)},[e]);return(0,R.jsx)(`div`,{id:`webhook-routes-page-container`,className:`flex flex-col gap-4`})}"
+if 'function WebhookRoutesPage()' not in content:
+    content = content.replace('function YR(){', page_comp_def + 'function YR(){', 1)
+    print("Added WebhookRoutesPage React component")
+else:
+    print("WebhookRoutesPage React component already present")
+
+# 4. Add route to React Router
+router_target = "(0,R.jsx)(jr,{path:`/misc`,element:(0,R.jsx)(YR,{})}),(0,R.jsx)(jr,{path:`/settings`,element:(0,R.jsx)(XR,{})})"
+router_replacement = "(0,R.jsx)(jr,{path:`/misc`,element:(0,R.jsx)(YR,{})}),(0,R.jsx)(jr,{path:`/webhook-routes`,element:(0,R.jsx)(WebhookRoutesPage,{})}),(0,R.jsx)(jr,{path:`/settings`,element:(0,R.jsx)(XR,{})})"
+if router_target in content:
+    content = content.replace(router_target, router_replacement, 1)
+    print("Added /webhook-routes path to React Router")
+elif router_replacement in content:
+    print("React Router already contains /webhook-routes")
+else:
+    print("WARNING: Router target not found")
+
+# 5. Inject the client-side JavaScript logic before </body>
+script_tag = """
+<!-- CUSTOM WEBHOOK ROUTING EXTENSION -->
 <script>
 (function() {
-  console.log('[GOWA] Initializing Custom Webhook Routes UI Extension...');
+  console.log('[GOWA] Initializing Custom Webhook Routes Native UI Extension...');
 
   // SVG Webhook Icon
   const webhookIconSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="inline-block shrink-0"><path d="M18 16.98h-5.99c-1.1 0-1.95.94-2.48 1.9A4 4 0 0 1 2 17c0-2.21 1.79-4 4-4h.01"/><path d="M6 13V6a3 3 0 0 1 3-3c1.3 0 2.4.84 2.82 2"/><path d="M12 9.5a3.5 3.5 0 0 1 7 0c0 1.61-.94 3-2.34 3.32"/><circle cx="6" cy="17" r="1"/><circle cx="12" cy="6" r="1"/><circle cx="17" cy="12" r="1"/></svg>';
 
-  let currentDeviceId = null;
-  let allDevices = [];
+  let activeDevId = null;
+  let cachedDevices = [];
 
-  // Helper to call GoWA API
   async function api(path, options = {}) {
     if (window.gowaApi) {
       try {
@@ -23,7 +63,6 @@ script_code = """
         throw (err.response && err.response.data && err.response.data.message) ? new Error(err.response.data.message) : err;
       }
     }
-    // Fallback direct fetch
     const auth = localStorage.getItem('gowa-ui.connection.v1');
     let headers = {'Content-Type': 'application/json'};
     if (auth) {
@@ -40,15 +79,6 @@ script_code = """
     return data.results !== undefined ? data.results : data;
   }
 
-  // Create Modal Container in DOM
-  let modalRoot = document.getElementById('webhook-routes-modal-root');
-  if (!modalRoot) {
-    modalRoot = document.createElement('div');
-    modalRoot.id = 'webhook-routes-modal-root';
-    document.body.appendChild(modalRoot);
-  }
-
-  // Show Toast Message
   function showToast(msg, isError = false) {
     const toast = document.createElement('div');
     toast.className = 'fixed bottom-5 right-5 z-[99999] px-4 py-3 rounded-lg shadow-xl text-sm font-medium transition-all duration-300 ' + 
@@ -61,54 +91,72 @@ script_code = """
     }, 3500);
   }
 
-  // Open Webhook Routes Manager
-  window.openWebhookRoutesManager = async function(deviceId) {
+  // Mount Webhook Routes Page inside the container
+  window.mountWebhookRoutesPage = async function(deviceId) {
+    const container = document.getElementById('webhook-routes-page-container');
+    if (!container) return;
+
     try {
-      allDevices = (await api('/devices')) || [];
+      cachedDevices = (await api('/devices')) || [];
     } catch(e) {
-      console.warn('Could not fetch devices:', e);
-      allDevices = [];
+      cachedDevices = [];
     }
 
-    if (!deviceId && allDevices.length > 0) {
+    if (!deviceId && cachedDevices.length > 0) {
       const savedDev = localStorage.getItem('gowa-ui.device.v1');
       if (savedDev) {
-        try { currentDeviceId = JSON.parse(savedDev).state.selectedDeviceId; } catch(e){}
+        try { activeDevId = JSON.parse(savedDev).state.selectedDeviceId; } catch(e){}
       }
-      if (!currentDeviceId || !allDevices.some(d => d.id === currentDeviceId)) {
-        currentDeviceId = allDevices[0].id;
+      if (!activeDevId || !cachedDevices.some(d => d.id === activeDevId)) {
+        activeDevId = cachedDevices[0].id;
       }
     } else if (deviceId) {
-      currentDeviceId = deviceId;
+      activeDevId = deviceId;
     }
 
-    renderRoutesListModal();
-  };
+    if (!activeDevId && cachedDevices.length === 0) {
+      container.innerHTML = `
+        <div class="flex flex-col gap-4">
+          <div class="flex flex-wrap items-end justify-between gap-3">
+            <div class="flex flex-col gap-1">
+              <h1 class="font-heading text-2xl font-semibold tracking-tight text-slate-100 flex items-center gap-2">
+                Webhook Routes
+              </h1>
+              <p class="text-sm text-slate-400">Route incoming WhatsApp events per group or sender JID with custom parameters.</p>
+            </div>
+          </div>
+          <div class="flex flex-col items-center justify-center rounded-lg border border-dashed border-slate-800 p-12 text-center bg-slate-900/30">
+            <p class="text-sm text-slate-300 font-medium">No WhatsApp device found.</p>
+            <p class="text-xs text-slate-500 mt-1">Please add or pair a device on the <a href="/" class="text-cyan-400 underline hover:text-cyan-300">Overview / Devices</a> page first.</p>
+          </div>
+        </div>
+      `;
+      return;
+    }
 
-  async function renderRoutesListModal() {
     let routes = [];
-    let loadError = null;
-    if (currentDeviceId) {
-      try {
-        routes = (await api('/devices/' + currentDeviceId + '/webhook/routes')) || [];
-      } catch(e) {
-        loadError = e.message;
-      }
+    let loadErr = null;
+    try {
+      routes = (await api('/devices/' + activeDevId + '/webhook/routes')) || [];
+    } catch(e) {
+      loadErr = e.message;
     }
 
-    const deviceOptions = allDevices.map(d => 
-      '<option value="' + d.id + '" ' + (d.id === currentDeviceId ? 'selected' : '') + '>' + 
+    window.currentDeviceRoutes = routes;
+
+    const deviceSelectOptions = cachedDevices.map(d => 
+      '<option value="' + d.id + '" ' + (d.id === activeDevId ? 'selected' : '') + '>' + 
       (d.display_name ? d.display_name + ' (' + d.id + ')' : d.id) + '</option>'
     ).join('');
 
-    let routesRowsHtml = '';
+    let tableRows = '';
     if (routes.length === 0) {
-      routesRowsHtml = '<tr><td colspan="5" class="py-8 text-center text-slate-400 text-sm">No webhook routes configured for this device yet.<br><span class="text-xs text-slate-500">Click <b>"+ Add Route"</b> to create custom routing rules per JID or Group.</span></td></tr>';
+      tableRows = '<tr><td colspan="5" class="py-12 text-center text-slate-400 text-sm">No webhook routes configured for this device yet.<br><span class="text-xs text-slate-500 mt-1 inline-block">Click <b>"+ Add Webhook Route"</b> above to route messages from specific groups or contacts.</span></td></tr>';
     } else {
-      routesRowsHtml = routes.map(r => {
+      tableRows = routes.map(r => {
         const isGroup = r.match_jid && (r.match_jid.endsWith('@g.us') || r.match_jid === '@g.us');
         const badgeColor = isGroup ? 'bg-indigo-500/15 text-indigo-400 border-indigo-500/30' : (r.match_jid === '*' ? 'bg-cyan-500/15 text-cyan-400 border-cyan-500/30' : 'bg-slate-700/60 text-slate-300 border-slate-600');
-        const exclusiveBadge = r.exclusive ? '<span class="px-2 py-0.5 rounded text-[11px] font-medium bg-amber-500/15 text-amber-400 border border-amber-500/30 ml-1.5" title="Exclusive: does not trigger default webhook">Exclusive</span>' : '';
+        const exclusiveBadge = r.exclusive ? '<span class="px-2 py-0.5 rounded text-[11px] font-medium bg-amber-500/15 text-amber-400 border border-amber-500/30 ml-2" title="Exclusive: suppresses default device webhook">Exclusive</span>' : '';
         const enabledBadge = r.enabled ? '<span class="px-2 py-0.5 rounded text-[11px] font-medium bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">Active</span>' : '<span class="px-2 py-0.5 rounded text-[11px] font-medium bg-slate-800 text-slate-500 border border-slate-700">Disabled</span>';
 
         let paramsCount = r.custom_params ? Object.keys(r.custom_params).length : 0;
@@ -118,86 +166,89 @@ script_code = """
         if (headersCount > 0) metaTags.push('<span class="text-[11px] bg-slate-800 px-1.5 py-0.5 rounded text-slate-300 border border-slate-700" title="Custom Headers">' + headersCount + ' header(s)</span>');
         if (r.webhook_events) metaTags.push('<span class="text-[11px] bg-slate-800 px-1.5 py-0.5 rounded text-slate-400 border border-slate-700">' + r.webhook_events + '</span>');
 
-        return '<tr class="border-b border-slate-800/80 hover:bg-slate-800/30 transition-colors text-xs font-normal text-slate-300">' +
-          '<td class="py-3 px-3"><div class="font-medium text-slate-100 text-sm">' + (r.name || 'Unnamed Route') + '</div>' + (exclusiveBadge) + '</td>' +
-          '<td class="py-3 px-3"><span class="px-2 py-1 rounded font-mono text-xs border ' + badgeColor + '">' + (r.match_jid || '*') + '</span></td>' +
-          '<td class="py-3 px-3"><div class="truncate max-w-[280px] font-mono text-slate-300" title="' + r.webhook_url + '">' + r.webhook_url + '</div><div class="flex gap-1 mt-1 flex-wrap">' + metaTags.join(' ') + '</div></td>' +
-          '<td class="py-3 px-3">' + enabledBadge + '</td>' +
-          '<td class="py-3 px-3 text-right space-x-1">' +
-            '<button onclick="window.openEditRouteModal(\'' + r.id + '\')" class="px-2.5 py-1 text-xs rounded border border-slate-700 hover:bg-slate-800 text-slate-200 transition-colors">Edit</button>' +
-            '<button onclick="window.deleteWebhookRoute(\'' + r.id + '\')" class="px-2.5 py-1 text-xs rounded bg-red-950/40 border border-red-800/50 hover:bg-red-900/60 text-red-300 transition-colors">Delete</button>' +
+        return '<tr class="border-b border-slate-800/80 hover:bg-slate-800/30 transition-colors text-xs text-slate-300">' +
+          '<td class="py-3.5 px-4"><div class="font-medium text-slate-100 text-sm flex items-center">' + (r.name || 'Unnamed Route') + exclusiveBadge + '</div></td>' +
+          '<td class="py-3.5 px-4"><span class="px-2.5 py-1 rounded font-mono text-xs border ' + badgeColor + '">' + (r.match_jid || '*') + '</span></td>' +
+          '<td class="py-3.5 px-4"><div class="truncate max-w-[320px] font-mono text-slate-300" title="' + r.webhook_url + '">' + r.webhook_url + '</div><div class="flex gap-1.5 mt-1 flex-wrap">' + metaTags.join(' ') + '</div></td>' +
+          '<td class="py-3.5 px-4">' + enabledBadge + '</td>' +
+          '<td class="py-3.5 px-4 text-right space-x-1.5">' +
+            '<button onclick="window.openEditRouteModal(\'' + r.id + '\')" class="px-3 py-1.5 text-xs rounded border border-slate-700 hover:bg-slate-800 text-slate-200 transition-colors">Edit</button>' +
+            '<button onclick="window.deleteWebhookRoute(\'' + r.id + '\')" class="px-3 py-1.5 text-xs rounded bg-red-950/40 border border-red-800/50 hover:bg-red-900/60 text-red-300 transition-colors">Delete</button>' +
           '</td>' +
         '</tr>';
       }).join('');
     }
 
-    modalRoot.innerHTML = `
-      <div class="fixed inset-0 z-[9999] flex items-center justify-center bg-black/80 backdrop-blur-sm p-4 overflow-y-auto">
-        <div class="bg-slate-900 border border-slate-800 rounded-xl max-w-4xl w-full p-6 shadow-2xl relative max-h-[90vh] flex flex-col">
-          <!-- Header -->
-          <div class="flex items-start justify-between pb-4 border-b border-slate-800">
-            <div class="flex items-center gap-3">
-              <div class="p-2.5 rounded-lg bg-cyan-950/60 border border-cyan-800/60 text-cyan-400">
-                ${webhookIconSvg}
-              </div>
-              <div>
-                <h2 class="text-lg font-semibold text-slate-100 flex items-center gap-2">
-                  Multi-Webhook Routing Manager
-                  <span class="text-[11px] px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 font-normal">Active</span>
-                </h2>
-                <p class="text-xs text-slate-400 mt-0.5">Route incoming WhatsApp events per group or sender JID to specific webhooks with custom parameters.</p>
-              </div>
-            </div>
-            <button onclick="document.getElementById('webhook-routes-modal-root').innerHTML=''" class="text-slate-400 hover:text-slate-100 p-1 rounded-lg hover:bg-slate-800 text-xl font-semibold leading-none">&times;</button>
+    container.innerHTML = `
+      <div class="flex flex-col gap-5">
+        <!-- Header -->
+        <div class="flex flex-wrap items-end justify-between gap-3">
+          <div class="flex flex-col gap-1">
+            <h1 class="font-heading text-2xl font-semibold tracking-tight text-slate-100 flex items-center gap-2">
+              Webhook Routes
+              <span class="text-[11px] px-2 py-0.5 rounded-full bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 font-normal">Active</span>
+            </h1>
+            <p class="text-sm text-slate-400">Route incoming WhatsApp events per group or sender JID to specific webhooks with custom query parameters and HTTP headers.</p>
           </div>
+          <div class="flex items-center gap-2">
+            <button onclick="window.openAddRouteModal()" class="inline-flex items-center justify-center rounded-md text-xs font-medium bg-cyan-600 hover:bg-cyan-500 text-white shadow h-9 px-4 transition-colors">
+              <span class="mr-1.5 text-base leading-none">+</span> Add Webhook Route
+            </button>
+          </div>
+        </div>
 
-          <!-- Device Selector & Actions -->
-          <div class="flex flex-wrap items-center justify-between gap-3 py-4 border-b border-slate-800/60">
+        <!-- Main Card -->
+        <div class="rounded-xl border border-slate-800 bg-slate-900/60 p-5 shadow-sm">
+          <div class="flex flex-wrap items-center justify-between gap-3 pb-4 border-b border-slate-800">
+            <div>
+              <h3 class="text-base font-semibold text-slate-100">Configured Rules</h3>
+              <p class="text-xs text-slate-400">Rules are evaluated whenever a WhatsApp message or event is received.</p>
+            </div>
             <div class="flex items-center gap-2">
-              <label class="text-xs font-medium text-slate-300 whitespace-nowrap">Target Device:</label>
-              <select id="route-device-selector" onchange="currentDeviceId=this.value; window.openWebhookRoutesManager(this.value);" class="h-8 px-2.5 rounded bg-slate-950 border border-slate-800 text-xs text-slate-200 focus:outline-none focus:border-cyan-500">
-                ${deviceOptions || '<option value="">No devices found</option>'}
+              <span class="text-xs text-slate-400 font-medium">Device:</span>
+              <select class="h-8 px-2.5 rounded bg-slate-950 border border-slate-800 text-xs text-slate-200 focus:outline-none focus:border-cyan-500" onchange="window.mountWebhookRoutesPage(this.value)">
+                ${deviceSelectOptions}
               </select>
             </div>
-            <div>
-              <button onclick="window.openAddRouteModal()" class="h-8 px-3.5 rounded text-xs font-medium bg-cyan-600 hover:bg-cyan-500 text-white shadow transition-colors flex items-center gap-1.5">
-                <span>+</span> Add Webhook Route
-              </button>
-            </div>
           </div>
 
-          <!-- Routes Table Content -->
-          <div class="flex-1 overflow-y-auto py-2">
-            ${loadError ? `<div class="p-3 my-2 rounded bg-red-950/50 border border-red-800 text-red-300 text-xs">${loadError}</div>` : ''}
+          ${loadErr ? `<div class="p-3 my-3 rounded bg-red-950/50 border border-red-800 text-red-300 text-xs">${loadErr}</div>` : ''}
+
+          <!-- Routes Table -->
+          <div class="overflow-x-auto pt-2">
             <table class="w-full text-left border-collapse">
               <thead>
                 <tr class="border-b border-slate-800 text-[11px] font-semibold uppercase tracking-wider text-slate-400 bg-slate-950/40">
-                  <th class="py-2.5 px-3">Route Name</th>
-                  <th class="py-2.5 px-3">Match Pattern (JID)</th>
-                  <th class="py-2.5 px-3">Target Webhook URL</th>
-                  <th class="py-2.5 px-3">Status</th>
-                  <th class="py-2.5 px-3 text-right">Actions</th>
+                  <th class="py-3 px-4">Route Name</th>
+                  <th class="py-3 px-4">Match Pattern (JID)</th>
+                  <th class="py-3 px-4">Destination Webhook URL</th>
+                  <th class="py-3 px-4">Status</th>
+                  <th class="py-3 px-4 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody>
-                ${routesRowsHtml}
+                ${tableRows}
               </tbody>
             </table>
           </div>
+        </div>
 
-          <!-- Footer -->
-          <div class="pt-4 border-t border-slate-800 flex items-center justify-between text-xs text-slate-500">
-            <div>
-              <span class="text-slate-400">Pro-tip:</span> Use <code class="text-cyan-400">@g.us</code> for all groups, or exact group ID <code class="text-cyan-400">1203...905@g.us</code>.
-            </div>
-            <button onclick="document.getElementById('webhook-routes-modal-root').innerHTML=''" class="px-4 py-1.5 rounded border border-slate-700 hover:bg-slate-800 text-slate-300 transition-colors">Close</button>
+        <div class="rounded-lg border border-slate-800/80 bg-slate-950/30 p-4 text-xs text-slate-400 flex items-start gap-3">
+          <div class="text-cyan-400 text-base mt-0.5">ℹ️</div>
+          <div class="space-y-1">
+            <p><strong class="text-slate-200">Matching Pattern Guide:</strong></p>
+            <ul class="list-disc list-inside space-y-0.5 text-slate-400">
+              <li><code class="text-cyan-400">120363429795720905@g.us</code> — Matches that specific group only.</li>
+              <li><code class="text-cyan-400">@g.us</code> — Wildcard: matches all WhatsApp group messages.</li>
+              <li><code class="text-cyan-400">628123456789@s.whatsapp.net</code> — Matches a specific individual contact.</li>
+              <li><code class="text-cyan-400">@s.whatsapp.net</code> — Wildcard: matches all 1:1 direct chats.</li>
+              <li><code class="text-cyan-400">*</code> — Matches all events.</li>
+            </ul>
           </div>
         </div>
       </div>
     `;
-
-    window.currentDeviceRoutes = routes;
-  }
+  };
 
   // Add / Edit Route Form Modal
   window.openAddRouteModal = function() {
@@ -237,7 +288,7 @@ script_code = """
           <div class="flex items-start justify-between pb-3 border-b border-slate-800">
             <div>
               <h3 class="text-base font-semibold text-slate-100">${isEdit ? 'Edit Webhook Route' : 'Add Webhook Route'}</h3>
-              <p class="text-xs text-slate-400">Device: <code class="text-cyan-400">${currentDeviceId}</code></p>
+              <p class="text-xs text-slate-400">Device: <code class="text-cyan-400">${activeDevId}</code></p>
             </div>
             <button onclick="document.getElementById('route-form-modal-wrap').remove()" class="text-slate-400 hover:text-slate-100 p-1 text-xl">&times;</button>
           </div>
@@ -396,14 +447,14 @@ script_code = """
 
     try {
       if (existingRouteId) {
-        await api('/devices/' + currentDeviceId + '/webhook/routes/' + existingRouteId, {
+        await api('/devices/' + activeDevId + '/webhook/routes/' + existingRouteId, {
           method: 'PUT',
           data: payload,
           body: JSON.stringify(payload)
         });
         showToast('Route updated successfully');
       } else {
-        await api('/devices/' + currentDeviceId + '/webhook/routes', {
+        await api('/devices/' + activeDevId + '/webhook/routes', {
           method: 'POST',
           data: payload,
           body: JSON.stringify(payload)
@@ -411,7 +462,7 @@ script_code = """
         showToast('New route added successfully');
       }
       document.getElementById('route-form-modal-wrap').remove();
-      renderRoutesListModal();
+      window.mountWebhookRoutesPage(activeDevId);
     } catch(err) {
       showToast('Failed to save route: ' + err.message, true);
     }
@@ -420,44 +471,15 @@ script_code = """
   window.deleteWebhookRoute = async function(routeId) {
     if (!confirm('Are you sure you want to delete this webhook route?')) return;
     try {
-      await api('/devices/' + currentDeviceId + '/webhook/routes/' + routeId, {
+      await api('/devices/' + activeDevId + '/webhook/routes/' + routeId, {
         method: 'DELETE'
       });
       showToast('Route deleted');
-      renderRoutesListModal();
+      window.mountWebhookRoutesPage(activeDevId);
     } catch(err) {
       showToast('Failed to delete: ' + err.message, true);
     }
   };
-
-  // Inject into sidebar navigation
-  function injectSidebarItem() {
-    if (document.getElementById('nav-webhook-routes')) return;
-
-    // Look for sidebar nav container
-    const navs = document.querySelectorAll('nav, aside, [class*="sidebar"]');
-    for (const nav of navs) {
-      const links = Array.from(nav.querySelectorAll('a, button'));
-      const sampleItem = links.find(el => el.textContent.includes('Channels & Calls') || el.textContent.includes('Settings') || el.textContent.includes('Devices'));
-      if (sampleItem) {
-        const newBtn = document.createElement('button');
-        newBtn.id = 'nav-webhook-routes';
-        newBtn.className = sampleItem.className;
-        newBtn.style.cursor = 'pointer';
-        newBtn.innerHTML = webhookIconSvg + '<span class="ml-2 font-medium">Webhook Routes</span>';
-        newBtn.onclick = function(e) {
-          e.preventDefault();
-          window.openWebhookRoutesManager();
-        };
-
-        if (sampleItem.parentElement) {
-          sampleItem.parentElement.appendChild(newBtn);
-          console.log('[GOWA] Successfully injected Webhook Routes into sidebar!');
-          return;
-        }
-      }
-    }
-  }
 
   // Inject into Device 3-dots Menu
   function injectDeviceMenu() {
@@ -474,44 +496,29 @@ script_code = """
         newItem.innerHTML = webhookIconSvg + '<span class="ml-2">Webhook Routes</span>';
         newItem.onclick = function(e) {
           e.preventDefault();
-          const savedDev = localStorage.getItem('gowa-ui.device.v1');
-          let devId = null;
-          if (savedDev) {
-            try { devId = JSON.parse(savedDev).state.selectedDeviceId; } catch(err){}
-          }
-          window.openWebhookRoutesManager(devId);
+          window.location.hash = '';
+          window.location.pathname = '/webhook-routes';
         };
         webhookItem.parentElement.insertBefore(newItem, webhookItem.nextSibling);
       }
     }
   }
 
-  // Run on interval & mutation observer
-  setInterval(() => {
-    injectSidebarItem();
-    injectDeviceMenu();
-  }, 1000);
-
-  const observer = new MutationObserver(() => {
-    injectSidebarItem();
-    injectDeviceMenu();
-  });
+  setInterval(injectDeviceMenu, 1000);
+  const observer = new MutationObserver(injectDeviceMenu);
   observer.observe(document.body, { childList: true, subtree: true });
 
 })();
 </script>
 """
 
-with open('storages/ui/index.html', 'r', encoding='utf-8') as f:
-    html = f.read()
-
 # Remove old injected script if any
-if '<!-- CUSTOM WEBHOOK ROUTING UI EXTENSION -->' in html:
-    html = html.split('<!-- CUSTOM WEBHOOK ROUTING UI EXTENSION -->')[0] + '</body>\n</html>'
+if '<!-- CUSTOM WEBHOOK ROUTING EXTENSION -->' in content:
+    content = content.split('<!-- CUSTOM WEBHOOK ROUTING EXTENSION -->')[0] + '</body>\n</html>'
 
-html = html.replace('</body>', script_code + '\n</body>')
+content = content.replace('</body>', script_tag + '\n</body>')
 
-with open('storages/ui/index.html', 'w', encoding='utf-8') as f:
-    f.write(html)
+with open(html_path, 'w', encoding='utf-8') as f:
+    f.write(content)
 
-print('SUCCESS: Webhook Routes UI injected cleanly into storages/ui/index.html')
+print("SUCCESS: index.html fully updated with native Webhook Routes sidebar item, router path, and page component!")
